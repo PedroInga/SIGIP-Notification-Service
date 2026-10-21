@@ -1,0 +1,77 @@
+# CI de notification-service: en cada push o pull request instala SIGIP-Common (del mismo usuario u organización
+# de GitHub), compila, ejecuta las pruebas, publica los reportes y construye la imagen Docker.
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Compilar y probar (Maven)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: servicio
+
+      - name: Descargar SIGIP-Common
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/SIGIP-Common
+          path: SIGIP-Common
+
+      - name: Instalar JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+          cache-dependency-path: servicio/pom.xml
+
+      - name: Instalar SIGIP-Common en el repositorio Maven local
+        run: mvn -B -ntp -f SIGIP-Common/pom.xml install -DskipTests
+
+      - name: Compilar, probar y medir cobertura
+        run: mvn -B -ntp -f servicio/pom.xml clean verify
+
+      - name: Publicar reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes
+          path: |
+            servicio/target/surefire-reports/
+            servicio/target/site/jacoco/
+          if-no-files-found: ignore
+
+  docker:
+    name: Imagen Docker
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: servicio
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/SIGIP-Common
+          path: SIGIP-Common
+      - uses: docker/setup-buildx-action@v3
+      - name: Construir imagen
+        uses: docker/build-push-action@v6
+        with:
+          context: servicio
+          build-contexts: common=SIGIP-Common
+          tags: sigip/notification-service:${{ github.sha }}
+          push: false
